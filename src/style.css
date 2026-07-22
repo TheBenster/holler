@@ -1,0 +1,35 @@
+:root {
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: #1a1730;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
+#scene {
+  display: block;
+  width: 100vw;
+  height: 100vh;
+  touch-action: none;
+}
+
+#fps {
+  position: fixed;
+  top: 10px;
+  left: 12px;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: rgba(255, 255, 255, 0.55);
+  text-transform: lowercase;
+  pointer-events: none;
+  user-select: none;
+}
