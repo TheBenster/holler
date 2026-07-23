@@ -33,3 +33,61 @@ body {
   pointer-events: none;
   user-select: none;
 }
+
+.overlay {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 16px;
+  background: linear-gradient(
+    to top,
+    rgba(10, 9, 20, 0.75),
+    rgba(10, 9, 20, 0)
+  );
+  font-size: 11px;
+  text-transform: lowercase;
+  letter-spacing: 0.02em;
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.overlay-group {
+  display: flex;
+  gap: 4px;
+}
+
+.overlay button {
+  font: inherit;
+  text-transform: lowercase;
+  letter-spacing: inherit;
+  color: rgba(255, 255, 255, 0.7);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 3px;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+
+.overlay button:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.overlay button.active {
+  background: rgba(255, 255, 255, 0.25);
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.4);
+}
+
+.overlay-slider {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.overlay-seed {
+  color: rgba(255, 255, 255, 0.45);
+  margin-left: auto;
+}
