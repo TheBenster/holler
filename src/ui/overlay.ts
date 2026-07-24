@@ -30,6 +30,8 @@ export interface OverlayDeps {
   getSeed: () => number;
   onRandomize: () => void;
   onReset: () => void;
+  isMuted: () => boolean;
+  onToggleMute: () => void;
 }
 
 export interface Overlay {
@@ -148,6 +150,20 @@ export function initOverlay(root: HTMLElement, deps: OverlayDeps): Overlay {
   });
   root.appendChild(resetBtn);
 
+  // Mute is the odd one out here: everything else in this file edits
+  // brushSettings/terrain directly, but there's nothing to mute until the
+  // gesture gate in main.ts has actually built an audio graph. Clicking
+  // this before then is a harmless no-op — onToggleMute() is responsible
+  // for checking whether there's a graph yet, not this module.
+  const muteBtn = document.createElement("button");
+  muteBtn.textContent = "mute";
+  muteBtn.title = "m";
+  muteBtn.addEventListener("click", () => {
+    deps.onToggleMute();
+    refresh();
+  });
+  root.appendChild(muteBtn);
+
   // The single function responsible for making the DOM match whatever
   // brushSettings/seed currently say. Every event handler above calls
   // this after it changes something, and main.ts's keyboard handler calls
@@ -161,6 +177,7 @@ export function initOverlay(root: HTMLElement, deps: OverlayDeps): Overlay {
     radiusInput.value = String(deps.brushSettings.radius);
     strengthInput.value = String(deps.brushSettings.strength);
     seedEl.textContent = `seed ${deps.getSeed()}`;
+    muteBtn.classList.toggle("active", deps.isMuted());
   }
 
   refresh(); // make sure the very first render already matches the real starting state
