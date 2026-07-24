@@ -2,15 +2,10 @@ import * as THREE from "three";
 import { Heightmap, WORLD_SIZE } from "./heightmap";
 import type { DirtyBounds } from "./brush";
 
-// This file's job: take the plain-number heightmap (just a flat array of
-// heights) and turn it into an actual three.js mesh you can look at — the
-// geometry (where the vertices are), the colors (what they look like), and
-// a couple of helpers to keep both in sync whenever the heightmap changes.
+// turning array of heights into mesh, helper functions for syncing user input
+// changing the mesh
 
-// §6 elevation color bands: which color a vertex gets depends on how high
-// it is. Read top to bottom as "if height is below this number, use this
-// color." The exact hex values are a placeholder — OPEN in the spec, meant
-// to be tuned by eye later, not something to treat as final.
+// come back to with eye, potential texture
 const BANDS: { max: number; color: THREE.Color }[] = [
   { max: -2.5, color: new THREE.Color("#1b2440") }, // deep water floor
   { max: 0, color: new THREE.Color("#2e4a66") }, // shallows
@@ -20,9 +15,7 @@ const BANDS: { max: number; color: THREE.Color }[] = [
   { max: Infinity, color: new THREE.Color("#c9c6bd") }, // snow/fog cap
 ];
 
-// Reused across every call to colorForHeight instead of creating a new
-// THREE.Color each time — same "don't allocate in a hot loop" reasoning as
-// brush.ts. This function can get called thousands of times per stroke.
+// gets called multiple times, used to avoid instantiating a new Color each time
 const tmpColor = new THREE.Color();
 
 function colorForHeight(h: number, jitter: number): THREE.Color {
@@ -33,11 +26,7 @@ function colorForHeight(h: number, jitter: number): THREE.Color {
       break;
     }
   }
-  // Without this, every vertex in the same band would be the exact same
-  // color, and the terrain would read as flat colored stripes instead of
-  // natural-looking ground. `jitter` is a random 0..1 value assigned once
-  // per vertex (see below) that very slightly brightens/darkens the color,
-  // just enough to break up the flatness without looking noisy.
+  //very slight color jitter so colors in the same band aren't flat
   const j = 1 + (jitter - 0.5) * 0.12;
   tmpColor.copy(band.color);
   tmpColor.r = Math.min(1, tmpColor.r * j);
@@ -56,36 +45,26 @@ export class TerrainMesh {
 
   constructor(private heightmap: Heightmap) {
     const n = heightmap.n;
-    // A PlaneGeometry starts out flat (all vertices at y=0) with n-1 by
+    // PlaneGeometry starts out flat (all vertices at y=0) with n-1 by
     // n-1 grid squares — we'll push each vertex up/down to match the
     // heightmap in syncAll() below. It's built lying in the XY plane by
     // default, so rotateX turns it to lie flat on the XZ plane instead
-    // (three.js convention: Y is "up").
+    // Y is "up".
     this.geometry = new THREE.PlaneGeometry(WORLD_SIZE, WORLD_SIZE, n - 1, n - 1);
     this.geometry.rotateX(-Math.PI / 2);
-    // vertex colors aren't part of a plain PlaneGeometry by default — we
-    // have to add our own color buffer, one RGB triplet per vertex.
+
     this.geometry.setAttribute(
       "color",
       new THREE.Float32BufferAttribute(new Float32Array(n * n * 3), 3),
     );
 
-    // One random "jitter" value per vertex, generated once and kept
-    // forever. If we regenerated this every time the terrain redrew, the
-    // speckled texture would flicker/shimmer during sculpting — picking it
-    // once and reusing it keeps each vertex's jitter stable no matter how
-    // its height (and therefore its color band) changes later.
+    // each vertex gets a jittered color once, and stays, so color isn't generated every frame
     this.jitter = new Float32Array(n * n);
     for (let i = 0; i < this.jitter.length; i++) this.jitter[i] = Math.random();
 
     this.material = new THREE.MeshStandardMaterial({
       vertexColors: true,
-      // flatShading gives the low-poly "each triangle is one flat facet"
-      // look this project wants, and — bonus — three.js computes those
-      // flat normals for free from the geometry itself. Without it we'd
-      // need to call geometry.computeVertexNormals() every single time we
-      // edit the terrain, which is exactly the kind of per-edit cost
-      // worth avoiding.
+      // flatShading: low poly
       flatShading: true,
       roughness: 1,
       metalness: 0,
@@ -93,23 +72,14 @@ export class TerrainMesh {
 
     this.mesh = new THREE.Mesh(this.geometry, this.material);
     this.mesh.matrixAutoUpdate = false; // this mesh never moves/rotates/scales, so let updateMatrix() be manual and skip the per-frame recompute
-    // Three.js normally skips drawing an object if its bounding sphere is
-    // outside the camera's view (this is "frustum culling," a common perf
-    // trick). That sphere gets computed once from the geometry's vertex
-    // positions. But sculpting keeps moving vertices — e.g. raising a peak
-    // pushes a vertex toward the +14 height clamp — so that original
-    // sphere goes stale, and a tall peak could get incorrectly culled
-    // (invisible) from certain camera angles if we don't either recompute
-    // the sphere on every edit (real cost, unnecessary for one mesh) or
-    // just tell three.js not to bother culling this object at all, which
-    // is what we do here. Totally fine for a single ~18k-triangle mesh.
+
+    // frustum culling causes an object to not be rendered if it's outside
+    // of a camera's view, with angles upwards of camera view, 
+    // objects may be incorrectly omitted.
+    // https://threejs.org/docs/#Object3D.frustumCulled
     this.mesh.frustumCulled = false;
 
-    // The water is just a second, flat, translucent plane sitting exactly
-    // at sea level (y=0). There's no wave simulation or anything fancy —
-    // any part of the terrain the user carves below y=0 will simply poke
-    // up through this plane and look "flooded" for free, no extra logic
-    // needed on the terrain side at all.
+    // water is flat, auto generates at y=0, no waves yet.
     const waterGeo = new THREE.PlaneGeometry(WORLD_SIZE, WORLD_SIZE);
     waterGeo.rotateX(-Math.PI / 2);
     const waterMat = new THREE.MeshStandardMaterial({
@@ -127,14 +97,7 @@ export class TerrainMesh {
     this.syncAll();
   }
 
-  /**
-   * Push every height + color from the heightmap into the geometry's
-   * buffers. This walks all n*n vertices, so call it for the "whole
-   * terrain changed at once" cases — first load, or after hitting
-   * randomize/reset. While the user is actively dragging a brush, use
-   * syncRegion() instead so we're not redoing 9000+ vertices to update the
-   * dozen or so a small brush actually touched.
-   */
+// developed for performance, only syncs the mesh to the heightmap data, no new objects are created, and no new memory is allocated.
   syncAll(): void {
     const n = this.heightmap.n;
     const pos = this.geometry.attributes.position as THREE.BufferAttribute;
@@ -149,10 +112,9 @@ export class TerrainMesh {
         col.setXYZ(idx, c.r, c.g, c.b);
       }
     }
-    // Setting a vertex's position/color in JS doesn't touch the GPU by
-    // itself — three.js only re-uploads a buffer when you flip its
-    // needsUpdate flag. Forgetting this line is a classic "I changed the
-    // data but nothing on screen moved" bug.
+    // setting a vertex's position/color in JS doesn't touch the GPU by
+    // itself three.js only re-uploads a buffer when you flip its
+    // needsUpdate flag
     pos.needsUpdate = true;
     col.needsUpdate = true;
     this.mesh.updateMatrix();
@@ -161,9 +123,7 @@ export class TerrainMesh {
   /**
    * Same idea as syncAll(), but only for the rectangle of cells a single
    * brush step actually touched (see brush.ts's DirtyBounds). Dragging a
-   * brush fires this on basically every pointermove event, so keeping it
-   * cheap matters a lot more here than it does for syncAll(), which only
-   * runs on big one-off actions like loading or randomizing.
+   * brush fires syncRegion on every pointermove event.
    *
    * One thing this does NOT do: a partial GPU upload. three.js does have
    * an API for that (BufferAttribute.addUpdateRange), which lets you tell
