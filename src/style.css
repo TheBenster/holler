@@ -91,3 +91,24 @@ body {
   color: rgba(255, 255, 255, 0.45);
   margin-left: auto;
 }
+
+#gesture-gate {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font: inherit;
+  font-size: 13px;
+  text-transform: lowercase;
+  letter-spacing: 0.04em;
+  color: #fff;
+  background: rgba(10, 9, 20, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 4px;
+  padding: 12px 22px;
+  cursor: pointer;
+}
+
+#gesture-gate:hover {
+  background: rgba(10, 9, 20, 0.9);
+}

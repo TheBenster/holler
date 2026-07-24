@@ -12,6 +12,7 @@ import {
   type BrushSettings,
   type BrushTool,
 } from "./terrain/brush";
+import type { AudioGraph } from "./audio/graph";
 import { initOverlay } from "./ui/overlay";
 import "./style.css";
 
@@ -91,6 +92,53 @@ const heightmap = new Heightmap(GRID_N, seed);
 const terrain = new TerrainMesh(heightmap);
 scene.add(terrain.mesh);
 scene.add(terrain.water);
+
+// --- gesture gate (§3, §17) --------------------------------------------
+// Browsers block audio from starting on its own — the AudioContext stays
+// suspended until it's resumed from inside a real user gesture (a click,
+// a tap), or the browser just silently ignores it. That's why the whole
+// audio graph doesn't get built here at module load alongside the scene:
+// building it is deferred to this one button's click handler, so there is
+// truly nothing audio-touching before the user has pressed something.
+//
+// Holds the graph once it exists so other code (the mute wiring below)
+// has something to reach into. Null until the gate fires.
+let audioGraph: AudioGraph | null = null;
+let muted = false;
+
+// Shared by the `m` key and the overlay's mute button — see overlay.ts's
+// mute button comment for why a no-op before the graph exists is fine.
+function toggleMute(): void {
+  if (!audioGraph) return;
+  muted = !muted;
+  audioGraph.setMuted(muted); // always a ramp under the hood (graph.ts) — never an instant, clicky jump
+}
+
+const gestureGate = document.querySelector<HTMLButtonElement>("#gesture-gate")!;
+gestureGate.addEventListener(
+  "click",
+  async () => {
+    gestureGate.disabled = true;
+    // Tone.js is ~700KB minified — dynamically importing it here instead
+    // of statically at the top of the file means it isn't even downloaded
+    // until the user presses this button, so the terrain is interactive
+    // sooner on first load. It also reinforces the same rule the import's
+    // *placement* is already enforcing: literally nothing audio-related
+    // is fetched, let alone touched, before the gesture.
+    const [Tone, { AudioGraph }] = await Promise.all([
+      import("tone"),
+      import("./audio/graph"),
+    ]);
+    // Tone.start() resumes (or creates) the AudioContext — on iOS this
+    // has to happen synchronously-ish inside the gesture handler itself,
+    // not after some later await, or the resume can silently fail (§17).
+    await Tone.start();
+    audioGraph = new AudioGraph();
+    audioGraph.start(); // fades in over ~2s (see graph.ts) — no click at the start
+    gestureGate.remove();
+  },
+  { once: true }, // this is a one-time "wake up the audio" button, not a toggle
+);
 
 // --- sculpting -------------------------------------------------------
 // This whole section is "raycast the terrain under the cursor every
@@ -252,11 +300,8 @@ canvas.addEventListener("pointercancel", (event) => {
 });
 
 // --- keyboard shortcuts (§5) ------------------------------------------
-// 1-4 brush select, [ ] radius, r reseed, backspace reset to seed. `m`
-// (mute) isn't here yet — there's nothing to mute until M2 has an audio
-// graph, and a no-op stub isn't worth adding before then (a keybinding
-// that silently does nothing is worse than no keybinding at all). `~`
-// debug overlay is M3.
+// 1-4 brush select, [ ] radius, r reseed, backspace reset to seed, m mute.
+// `~` debug overlay is M3.
 const BRUSH_KEYS: Record<string, BrushTool> = {
   "1": "raise",
   "2": "lower",
@@ -314,6 +359,9 @@ window.addEventListener("keydown", (event) => {
       event.preventDefault(); // don't let the browser navigate back
       resetToSeed();
       break;
+    case "m":
+      toggleMute();
+      break;
   }
   // Whatever just happened above (or didn't), tell the UI overlay to
   // re-read brushSettings/seed and update its buttons/sliders. Calling
@@ -324,8 +372,8 @@ window.addEventListener("keydown", (event) => {
 });
 
 // --- UI overlay (§5) ---------------------------------------------------
-// brush buttons, radius/strength sliders, seed, randomize, reset.
-// mute/record/share/help are M2/M5, not built yet.
+// brush buttons, radius/strength sliders, seed, randomize, reset, mute.
+// record/share/help are M5, not built yet.
 //
 // Notice overlay.ts never imports anything from this file — instead we
 // hand it everything it needs as a small object (brushSettings itself,
@@ -338,6 +386,8 @@ const overlay = initOverlay(overlayEl, {
   getSeed: () => heightmap.seed,
   onRandomize: randomizeSeed,
   onReset: resetToSeed,
+  isMuted: () => muted,
+  onToggleMute: toggleMute,
 });
 
 function resize(): void {
