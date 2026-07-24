@@ -62,10 +62,14 @@ function boxBlur3x3(heightmap: Heightmap, ix: number, iz: number): number {
   const data = heightmap.data;
   let sum = 0;
   let count = 0;
+  // loop over rows
   for (let dz = -1; dz <= 1; dz++) {
+    // nz = row index, iz = is current row in iter, dz is difference, so nz = iz + dz is the row we're looking at. If it's out of bounds, skip it.
     const nz = iz + dz;
+    // in this case, nz is out of bounds, so we skip, can't find a delta of none
     if (nz < 0 || nz >= n) continue;
     for (let dx = -1; dx <= 1; dx++) {
+      // x is column, 
       const nx = ix + dx;
       if (nx < 0 || nx >= n) continue;
       sum += data[nz * n + nx]!;
@@ -99,7 +103,7 @@ function boxBlur3x3(heightmap: Heightmap, ix: number, iz: number): number {
  *    elevation, like a levelling tool.
  *
  * Everything here mutates `heightmap.data` directly and reuses the
- * `bounds` object the caller passed in — no `new` anywhere in this
+ * `bounds` object the caller passed in. no `new` anywhere in this
  * function. That matters because this runs on every pointermove while
  * you're dragging; allocating objects in a loop like that is exactly what
  * causes those little stutters/hitches you sometimes feel in laggy web
