@@ -1,4 +1,5 @@
 import * as Tone from "tone";
+import type { TerrainStats } from "../terrain/stats";
 
 // Builds the §8 signal chain and holds every node the mapping engine (M3)
 // will eventually ramp based on computeStats. For M2 the graph exists,
@@ -12,9 +13,21 @@ import * as Tone from "tone";
 // range, so flipping M3's mapping engine on later doesn't produce a jump —
 // it just starts modulating around wherever the terrain naturally sits.
 
-const DRONE_NOTE = "A1";
-const DRONE_SPREAD_CENTS = 20; // §9 roughness → spread range is 8..45 cents
-const DRONE_VOLUME_DB = -14; // raw sawtooth is loud; trim before it hits anything else
+// Not part of the §9 mapping table — waveform is a discrete character
+// choice, not something terrain shape drives, so it's a small deliberate
+// exception to the graph's "everything is either fixed or terrain-driven"
+// rule, the same way mute is. Cycled with `w` / an overlay button; see
+// AudioGraph.cycleDroneType() below.
+export type DroneWaveform = "sawtooth" | "sine" | "triangle" | "square";
+const DRONE_WAVEFORMS: DroneWaveform[] = ["sawtooth", "sine", "triangle", "square"];
+
+const PAD_SPREAD_CENTS = 14;
+const PAD_VOICE_VOLUME_DB = -25;
+
+// One open, consonant A-minor-7 voicing. The terrain raises or lowers its
+// register in octaves, while the map's four quadrants mix these four tones.
+const PAD_NOTES = ["A1", "E2", "G2", "C3"] as const;
+const REGISTER_OFFSETS = [-12, 0, 12, 24] as const;
 
 const DRONE_FILTER_FREQ = 1200; // §9 valleyDepth → frequency range is 160..3500 Hz
 const DRONE_FILTER_ROLLOFF = -24; // §8: -24 dB/oct, fixed, not a mapped param
@@ -37,6 +50,8 @@ const MUTE_RAMP_SECONDS = 0.15; // long enough to not click, short enough to fee
 
 export class AudioGraph {
   readonly droneOsc: Tone.FatOscillator;
+  readonly padVoices: readonly Tone.FatOscillator[];
+  readonly padPanners: readonly Tone.Panner[];
   readonly droneFilter: Tone.Filter;
   readonly noise: Tone.Noise;
   readonly noiseFilter: Tone.Filter;
@@ -44,11 +59,25 @@ export class AudioGraph {
   readonly delay: Tone.FeedbackDelay;
   readonly limiter: Tone.Limiter;
   readonly masterGain: Tone.Gain;
+  private registerIndex = -1;
 
   constructor() {
-    // --- drone: droneOsc -> droneFilter -> (reverb send) ---
-    this.droneOsc = new Tone.FatOscillator(DRONE_NOTE, "sawtooth", DRONE_SPREAD_CENTS);
-    this.droneOsc.volume.value = DRONE_VOLUME_DB;
+    // --- terrain pad: four related oscillators -> droneFilter ---
+    // `droneOsc` remains the first voice for the existing waveform UI;
+    // together these voices are a chord pad rather than a single fixed A1.
+      this.droneOsc = new Tone.FatOscillator(
+      PAD_NOTES[0],
+      DRONE_WAVEFORMS[0],
+      PAD_SPREAD_CENTS,
+    );
+    this.padVoices = [
+      this.droneOsc,
+      ...PAD_NOTES.slice(1).map(
+        (note) => new Tone.FatOscillator(note, DRONE_WAVEFORMS[0], PAD_SPREAD_CENTS),
+      ),
+    ];
+    for (const voice of this.padVoices) voice.volume.value = PAD_VOICE_VOLUME_DB;
+    this.padPanners = [-0.45, 0.45, -0.25, 0.25].map((pan) => new Tone.Panner(pan));
     this.droneFilter = new Tone.Filter(DRONE_FILTER_FREQ, "lowpass", DRONE_FILTER_ROLLOFF);
 
     // --- noise bed: noise -> noiseFilter -> (reverb send) ---
@@ -79,7 +108,10 @@ export class AudioGraph {
     // below — in Web Audio, multiple things connected to one input just
     // sum together, so this *is* the merge point in the §8 diagram, no
     // separate mixer node required.
-    this.droneOsc.chain(this.droneFilter, this.reverb);
+    for (let i = 0; i < this.padVoices.length; i++) {
+      this.padVoices[i]!.chain(this.padPanners[i]!, this.droneFilter);
+    }
+    this.droneFilter.connect(this.reverb);
     this.noise.chain(this.noiseFilter, this.reverb);
     this.reverb.chain(this.delay, this.limiter, this.masterGain);
     this.masterGain.toDestination();
@@ -93,7 +125,7 @@ export class AudioGraph {
    * at all, so it stays testable without a fake DOM event.
    */
   start(): void {
-    this.droneOsc.start();
+    for (const voice of this.padVoices) voice.start();
     this.noise.start();
     this.masterGain.gain.rampTo(1, FADE_IN_SECONDS);
   }
@@ -104,8 +136,58 @@ export class AudioGraph {
     this.masterGain.gain.rampTo(muted ? 0 : 1, MUTE_RAMP_SECONDS);
   }
 
+  /**
+   * Advances the drone to the next waveform in DRONE_WAVEFORMS and returns
+   * it. Unlike every ramped param elsewhere in this file, there's no
+   * "smooth" way to morph a sawtooth into a sine — waveform is categorical,
+   * not continuous, so switching it is an audible, instant timbre change
+   * by nature (real synths' waveform selectors work the same way). That's
+   * expected here, not a violation of §8's "always ramp" rule — that rule
+   * is about numeric params that *can* zipper, and this isn't one.
+   */
+  cyclePadVoiceType(index: number): DroneWaveform {
+    const voice = this.padVoices[index];
+    if (!voice) throw new Error(`No pad voice exists for quadrant ${index}`);
+    const current = voice.type as DroneWaveform;
+    const next = DRONE_WAVEFORMS[(DRONE_WAVEFORMS.indexOf(current) + 1) % DRONE_WAVEFORMS.length]!;
+    voice.type = next;
+    return next;
+  }
+
+  /** The waveform assigned to one terrain quadrant. */
+  getPadVoiceType(index: number): DroneWaveform {
+    const voice = this.padVoices[index];
+    if (!voice) throw new Error(`No pad voice exists for quadrant ${index}`);
+    return voice.type as DroneWaveform;
+  }
+
+  /**
+   * Broad raised land moves the whole pad in octave-sized register steps.
+   * Each quadrant controls the prominence of one chord tone, making the
+   * visible distribution of land into a literal chord voicing.
+   */
+  updateTerrainHarmony(stats: TerrainStats): void {
+    const nextRegister = stats.landMass < 0.45 ? 0 : stats.landMass < 1.1 ? 1 : stats.landMass < 2 ? 2 : 3;
+    if (nextRegister !== this.registerIndex) {
+      this.registerIndex = nextRegister;
+      const offset = REGISTER_OFFSETS[nextRegister]!;
+      for (let i = 0; i < this.padVoices.length; i++) {
+        const frequency = Tone.Frequency(PAD_NOTES[i]!).transpose(offset).toFrequency();
+        this.padVoices[i]!.frequency.rampTo(frequency, 1.2);
+      }
+    }
+
+    for (let i = 0; i < this.padVoices.length; i++) {
+      // The quiet floor preserves an ambient bed; building broad terrain in
+      // a quadrant brings its chord tone forward without a hard on/off edge.
+      const amount = Math.max(0, Math.min(1, stats.regionMass[i]! / 1.5));
+      this.padVoices[i]!.volume.rampTo(-36 + amount * 13, 0.7);
+    }
+  }
+
   dispose(): void {
-    this.droneOsc.dispose();
+    for (const voice of this.padVoices) voice.dispose();
+    for (const panner of this.padPanners) panner.dispose();
     this.droneFilter.dispose();
     this.noise.dispose();
     this.noiseFilter.dispose();
