@@ -32,6 +32,9 @@ export interface OverlayDeps {
   onReset: () => void;
   isMuted: () => boolean;
   onToggleMute: () => void;
+  isWaveSelectionActive: () => boolean;
+  getWaveSelectionLabel: () => string;
+  onToggleWaveSelection: () => void;
 }
 
 export interface Overlay {
@@ -164,6 +167,17 @@ export function initOverlay(root: HTMLElement, deps: OverlayDeps): Overlay {
   });
   root.appendChild(muteBtn);
 
+  // Opens the spatial waveform selector. Choosing a waveform happens by
+  // clicking a terrain quadrant, rather than through an abstract global
+  // synth control.
+  const waveformBtn = document.createElement("button");
+  waveformBtn.title = "w";
+  waveformBtn.addEventListener("click", () => {
+    deps.onToggleWaveSelection();
+    refresh();
+  });
+  root.appendChild(waveformBtn);
+
   // The single function responsible for making the DOM match whatever
   // brushSettings/seed currently say. Every event handler above calls
   // this after it changes something, and main.ts's keyboard handler calls
@@ -178,6 +192,10 @@ export function initOverlay(root: HTMLElement, deps: OverlayDeps): Overlay {
     strengthInput.value = String(deps.brushSettings.strength);
     seedEl.textContent = `seed ${deps.getSeed()}`;
     muteBtn.classList.toggle("active", deps.isMuted());
+    waveformBtn.textContent = deps.isWaveSelectionActive()
+      ? `waves · ${deps.getWaveSelectionLabel()}`
+      : "waves";
+    waveformBtn.classList.toggle("active", deps.isWaveSelectionActive());
   }
 
   refresh(); // make sure the very first render already matches the real starting state
