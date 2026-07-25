@@ -13,7 +13,12 @@ import {
   type BrushTool,
 } from "./terrain/brush";
 import type { AudioGraph } from "./audio/graph";
+import type { MappingEngine } from "./audio/mappings";
+import { createStats, computeStats } from "./terrain/stats";
 import { initOverlay } from "./ui/overlay";
+import { initDebug } from "./ui/debug";
+import { QuadrantSelector } from "./ui/quadrant-selector";
+import { initVoices } from "./ui/voices";
 import "./style.css";
 
 // This is the entry point — the one file that actually wires the pieces
@@ -33,9 +38,11 @@ const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
 // number of pixels we're actually rendering from exploding on those
 // devices, which is a big chunk of the fps budget on weaker hardware.
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+const LOW_RES_WIDTH = 480;
+let lowResMode = true;
 
 const scene = new THREE.Scene();
-const fogColor = new THREE.Color("#1a1730");
+const fogColor = new THREE.Color("#27213d");
 scene.background = fogColor;
 // Fog color matching the background is what makes distant terrain fade
 // smoothly into the sky instead of having a visible hard edge where the
@@ -92,6 +99,13 @@ const heightmap = new Heightmap(GRID_N, seed);
 const terrain = new TerrainMesh(heightmap);
 scene.add(terrain.mesh);
 scene.add(terrain.water);
+const quadrantSelector = new QuadrantSelector();
+scene.add(quadrantSelector.group);
+
+// §7: the current five-number summary of the terrain, kept up to date by
+// refreshStats() below. One shared, preallocated object — see stats.ts's
+// computeStats() for why this doesn't get recreated on every recompute.
+const stats = createStats();
 
 // --- gesture gate (§3, §17) --------------------------------------------
 // Browsers block audio from starting on its own — the AudioContext stays
@@ -105,6 +119,11 @@ scene.add(terrain.water);
 // has something to reach into. Null until the gate fires.
 let audioGraph: AudioGraph | null = null;
 let muted = false;
+let waveSelectionActive = false;
+let waveSelectionLabel = "select";
+// §9's mapping engine — null until the gate fires, same as audioGraph,
+// since it's built from the graph and has nothing to drive before then.
+let mappingEngine: MappingEngine | null = null;
 
 // Shared by the `m` key and the overlay's mute button — see overlay.ts's
 // mute button comment for why a no-op before the graph exists is fine.
@@ -112,6 +131,48 @@ function toggleMute(): void {
   if (!audioGraph) return;
   muted = !muted;
   audioGraph.setMuted(muted); // always a ramp under the hood (graph.ts) — never an instant, clicky jump
+}
+
+function setWaveSelectionActive(active: boolean): void {
+  waveSelectionActive = active;
+  controls.enabled = !active;
+  quadrantSelector.setVisible(active);
+  if (active) waveSelectionLabel = "select";
+}
+
+function toggleWaveSelection(): void {
+  setWaveSelectionActive(!waveSelectionActive);
+}
+
+function quadrantForPoint(point: THREE.Vector3): number {
+  return (point.z >= 0 ? 2 : 0) + (point.x >= 0 ? 1 : 0);
+}
+
+function selectQuadrant(point: THREE.Vector3): void {
+  const index = quadrantForPoint(point);
+  quadrantSelector.setHovered(index);
+  if (!audioGraph) return;
+  const waveform = audioGraph.cyclePadVoiceType(index);
+  const label = ["nw", "ne", "sw", "se"][index]!;
+  waveSelectionLabel = `${label} ${waveform}`;
+  voices.refresh();
+}
+
+// §7: "recomputed at most 15Hz while a stroke is active and once on
+// pointer-up." `force` is how callers other than the drag loop itself
+// (pointer-up, randomize, reset, first load) skip the throttle — those
+// are one-shot terrain changes, not a 60fps drag, so there's no flood of
+// calls to protect against and no reason to wait up to 66ms to reflect
+// them.
+let lastStatsAt = 0;
+const STATS_INTERVAL_MS = 1000 / 15;
+
+function refreshStats(force: boolean, now: number): void {
+  if (!force && now - lastStatsAt < STATS_INTERVAL_MS) return;
+  computeStats(heightmap, stats);
+  mappingEngine?.apply(stats);
+  audioGraph?.updateTerrainHarmony(stats);
+  lastStatsAt = now;
 }
 
 const gestureGate = document.querySelector<HTMLButtonElement>("#gesture-gate")!;
@@ -125,9 +186,10 @@ gestureGate.addEventListener(
     // sooner on first load. It also reinforces the same rule the import's
     // *placement* is already enforcing: literally nothing audio-related
     // is fetched, let alone touched, before the gesture.
-    const [Tone, { AudioGraph }] = await Promise.all([
+    const [Tone, { AudioGraph }, { MappingEngine }] = await Promise.all([
       import("tone"),
       import("./audio/graph"),
+      import("./audio/mappings"),
     ]);
     // Tone.start() resumes (or creates) the AudioContext — on iOS this
     // has to happen synchronously-ish inside the gesture handler itself,
@@ -135,6 +197,11 @@ gestureGate.addEventListener(
     await Tone.start();
     audioGraph = new AudioGraph();
     audioGraph.start(); // fades in over ~2s (see graph.ts) — no click at the start
+    mappingEngine = new MappingEngine(audioGraph);
+    // Otherwise the graph would sit at its M2 "park" values until the
+    // first stroke — apply what the terrain actually looks like right
+    // now, immediately, instead of waiting for the user to touch it.
+    refreshStats(true, performance.now());
     gestureGate.remove();
   },
   { once: true }, // this is a one-time "wake up the audio" button, not a toggle
@@ -256,6 +323,7 @@ function stepStroke(event: PointerEvent, knownPoint?: THREE.Vector3): void {
   // applyBrushStep only touched the heightmap's numbers; syncRegion is
   // what actually pushes those numbers into the visible mesh.
   terrain.syncRegion(stepBounds);
+  refreshStats(false, now); // throttled to 15Hz internally — see refreshStats above
 }
 
 // Called on pointerup/pointercancel to formally end the stroke and hand
@@ -267,9 +335,19 @@ function endStroke(event: PointerEvent): void {
   if (canvas.hasPointerCapture(event.pointerId)) {
     canvas.releasePointerCapture(event.pointerId);
   }
+  // §7: "once on pointer-up" — forced, bypassing the 15Hz throttle, so the
+  // terrain's final settled shape always gets reflected even if the last
+  // in-drag update landed slightly before it.
+  refreshStats(true, performance.now());
 }
 
 canvas.addEventListener("pointerdown", (event) => {
+  if (waveSelectionActive && (event.pointerType === "touch" || event.button === 0)) {
+    const point = raycastTerrain(event);
+    if (point) selectQuadrant(point);
+    overlay.refresh();
+    return;
+  }
   if (event.pointerType === "touch") {
     touchPointers.add(event.pointerId);
     if (touchPointers.size > 1) {
@@ -287,6 +365,11 @@ canvas.addEventListener("pointerdown", (event) => {
 });
 
 canvas.addEventListener("pointermove", (event) => {
+  if (waveSelectionActive) {
+    const point = raycastTerrain(event);
+    quadrantSelector.setHovered(point ? quadrantForPoint(point) : null);
+    return;
+  }
   stepStroke(event);
 });
 
@@ -300,7 +383,8 @@ canvas.addEventListener("pointercancel", (event) => {
 });
 
 // --- keyboard shortcuts (§5) ------------------------------------------
-// 1-4 brush select, [ ] radius, r reseed, backspace reset to seed, m mute.
+// 1-4 brush select, [ ] radius, r reseed, backspace reset to seed, m mute,
+// w opens the terrain's four-quadrant waveform selector.
 // `~` debug overlay is M3.
 const BRUSH_KEYS: Record<string, BrushTool> = {
   "1": "raise",
@@ -315,6 +399,7 @@ function randomizeSeed(): void {
   const newSeed = Math.floor(Math.random() * 1_000_000_000);
   heightmap.generate(newSeed);
   terrain.syncAll();
+  refreshStats(true, performance.now()); // whole terrain just changed, not a drag — no reason to wait
 }
 
 // Regenerates the terrain using the seed it already has — this is "undo
@@ -325,6 +410,7 @@ function randomizeSeed(): void {
 function resetToSeed(): void {
   heightmap.generate(heightmap.seed);
   terrain.syncAll();
+  refreshStats(true, performance.now());
 }
 
 window.addEventListener("keydown", (event) => {
@@ -362,6 +448,19 @@ window.addEventListener("keydown", (event) => {
     case "m":
       toggleMute();
       break;
+    case "w":
+      toggleWaveSelection();
+      break;
+    case "p":
+      lowResMode = !lowResMode;
+      resize();
+      break;
+    case "~":
+      debug.toggle();
+      break;
+    case "Escape":
+      setWaveSelectionActive(false);
+      break;
   }
   // Whatever just happened above (or didn't), tell the UI overlay to
   // re-read brushSettings/seed and update its buttons/sliders. Calling
@@ -388,6 +487,23 @@ const overlay = initOverlay(overlayEl, {
   onReset: resetToSeed,
   isMuted: () => muted,
   onToggleMute: toggleMute,
+  isWaveSelectionActive: () => waveSelectionActive,
+  getWaveSelectionLabel: () => waveSelectionLabel,
+  onToggleWaveSelection: toggleWaveSelection,
+});
+
+const voicesEl = document.querySelector<HTMLDivElement>("#voices")!;
+const voices = initVoices(voicesEl, {
+  getWaveform: (index) => audioGraph?.getPadVoiceType(index) ?? "sawtooth",
+});
+
+// --- debug overlay (§13, toggled with `~`) ------------------------------
+const debugEl = document.querySelector<HTMLDivElement>("#debug")!;
+const debug = initDebug(debugEl, {
+  getFps: () => currentFps,
+  stats,
+  getMappingEngine: () => mappingEngine,
+  getRenderMode: () => (lowResMode ? "low-res · p to toggle" : "full-res · p to toggle"),
 });
 
 function resize(): void {
@@ -395,7 +511,15 @@ function resize(): void {
   const h = window.innerHeight;
   camera.aspect = w / h;
   camera.updateProjectionMatrix(); // required after changing aspect — it doesn't take effect on its own
-  renderer.setSize(w, h);
+  renderer.setPixelRatio(lowResMode ? 1 : Math.min(window.devicePixelRatio, 2));
+  if (lowResMode) {
+    // Preserve the viewport's aspect ratio while rendering at roughly
+    // 480×270. CSS scales this small canvas back to the viewport.
+    renderer.setSize(LOW_RES_WIDTH, Math.round(LOW_RES_WIDTH / camera.aspect), false);
+  } else {
+    renderer.setSize(w, h, false);
+  }
+  canvas.classList.toggle("pixelated", lowResMode);
 }
 window.addEventListener("resize", resize);
 resize(); // run once immediately so the very first frame is already sized correctly
@@ -426,6 +550,10 @@ controls.addEventListener("end", () => {
 // a stable, glanceable readout instead.
 let frames = 0;
 let lastFpsAt = performance.now();
+let lastFrameAt = performance.now();
+// Readable by the debug overlay (§13) via a getter — separate from the
+// fpsEl text update just below, which is the always-visible readout.
+let currentFps = 0;
 
 // The main render loop. requestAnimationFrame schedules this to run again
 // right before the browser's next repaint — calling it again as the very
@@ -435,6 +563,15 @@ let lastFpsAt = performance.now();
 // thing this function does, structurally.
 function frame(now: number): void {
   requestAnimationFrame(frame);
+
+  const dt = (now - lastFrameAt) / 1000;
+  lastFrameAt = now;
+  // Real Tone Signals ramp on the audio clock and don't need this — tick()
+  // only does anything for the rare mapping (droneOsc.spread) that isn't
+  // natively automatable and falls back to mappings.ts's SoftRamp. See
+  // that file for why. A no-op call when there's no mapping engine yet or
+  // no SoftRamp mappings exist.
+  mappingEngine?.tick(dt);
 
   if (!reduceMotion && !userInteracting && now - lastInputAt > 20_000) {
     const t = now * 0.00003; // slow angular speed — this is meant to be barely perceptible, ambient motion
@@ -449,10 +586,14 @@ function frame(now: number): void {
 
   frames++;
   if (now - lastFpsAt >= 250) {
-    const fps = Math.round((frames * 1000) / (now - lastFpsAt));
-    fpsEl.textContent = `${fps} fps · seed ${heightmap.seed} · n${heightmap.n}`;
+    currentFps = Math.round((frames * 1000) / (now - lastFpsAt));
+    fpsEl.textContent = `${currentFps} fps · seed ${heightmap.seed} · n${heightmap.n}`;
     frames = 0;
     lastFpsAt = now;
+    // Piggybacking on the same ~4x/sec tick as the fps readout — the
+    // debug panel doesn't need to update any faster than that's readable,
+    // and refresh() is already a no-op when the panel isn't visible.
+    debug.refresh();
   }
 }
 requestAnimationFrame(frame); // kick the loop off

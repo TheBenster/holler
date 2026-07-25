@@ -11,7 +11,7 @@ body {
   margin: 0;
   height: 100%;
   overflow: hidden;
-  background: #1a1730;
+  background: #27213d;
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 }
 
@@ -20,6 +20,10 @@ body {
   width: 100vw;
   height: 100vh;
   touch-action: none;
+}
+
+#scene.pixelated {
+  image-rendering: pixelated;
 }
 
 #fps {
@@ -111,4 +115,61 @@ body {
 
 #gesture-gate:hover {
   background: rgba(10, 9, 20, 0.9);
+}
+
+.debug {
+  position: fixed;
+  top: 10px;
+  right: 12px;
+  min-width: 220px;
+  padding: 8px 10px;
+  background: rgba(10, 9, 20, 0.65);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 4px;
+  font-size: 10px;
+  line-height: 1.5;
+  letter-spacing: 0.02em;
+  color: rgba(255, 255, 255, 0.8);
+  pointer-events: none;
+  user-select: none;
+  white-space: pre;
+}
+
+.debug-dim {
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.voices {
+  position: fixed;
+  top: 36px;
+  right: 12px;
+  width: 164px;
+  padding: 8px 9px;
+  background: rgba(10, 9, 20, 0.58);
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  border-radius: 4px;
+  color: rgba(255, 235, 190, 0.82);
+  font-size: 9px;
+  line-height: 1.3;
+  letter-spacing: 0.02em;
+  pointer-events: none;
+  user-select: none;
+}
+
+.voices-title {
+  margin-bottom: 5px;
+  color: rgba(255, 255, 255, 0.48);
+}
+
+.voice-row {
+  display: grid;
+  grid-template-columns: 16px 74px 1fr;
+  align-items: center;
+  gap: 4px;
+  min-height: 18px;
+}
+
+.voice-row svg {
+  width: 74px;
+  height: 20px;
 }
