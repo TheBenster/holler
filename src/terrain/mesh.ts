@@ -7,12 +7,12 @@ import type { DirtyBounds } from "./brush";
 
 // come back to with eye, potential texture
 const BANDS: { max: number; color: THREE.Color }[] = [
-  { max: -2.5, color: new THREE.Color("#1b2440") }, // deep water floor
-  { max: 0, color: new THREE.Color("#2e4a66") }, // shallows
-  { max: 0.6, color: new THREE.Color("#8a7f5c") }, // shore
-  { max: 5, color: new THREE.Color("#4e6b45") }, // field
-  { max: 9, color: new THREE.Color("#6b6560") }, // rock
-  { max: Infinity, color: new THREE.Color("#c9c6bd") }, // snow/fog cap
+  { max: -2.5, color: new THREE.Color("#17233d") }, // deep water floor
+  { max: 0, color: new THREE.Color("#315675") }, // shallows
+  { max: 0.6, color: new THREE.Color("#9c8b63") }, // shore
+  { max: 5, color: new THREE.Color("#526a4a") }, // dusk field
+  { max: 9, color: new THREE.Color("#71645f") }, // mauve rock
+  { max: Infinity, color: new THREE.Color("#d5c9be") }, // warm snow/fog cap
 ];
 
 // gets called multiple times, used to avoid instantiating a new Color each time
@@ -83,7 +83,7 @@ export class TerrainMesh {
     const waterGeo = new THREE.PlaneGeometry(WORLD_SIZE, WORLD_SIZE);
     waterGeo.rotateX(-Math.PI / 2);
     const waterMat = new THREE.MeshStandardMaterial({
-      color: new THREE.Color("#2e4a66"),
+      color: new THREE.Color("#315675"),
       transparent: true,
       opacity: 0.55,
       roughness: 0.2,

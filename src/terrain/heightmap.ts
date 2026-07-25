@@ -76,4 +76,24 @@ export class Heightmap {
     const z = (iz / (this.n - 1)) * WORLD_SIZE - half;
     return { x, z };
   }
+
+  /**
+   * Bilinearly sample the surface at a world-space point. The scanner uses
+   * this rather than snapping to a vertex, so its note stream follows the
+   * sculpted slopes smoothly as it travels around the orbit.
+   */
+  sampleWorld(x: number, z: number): number {
+    const half = WORLD_SIZE / 2;
+    const u = Math.max(0, Math.min(this.n - 1, ((x + half) / WORLD_SIZE) * (this.n - 1)));
+    const v = Math.max(0, Math.min(this.n - 1, ((z + half) / WORLD_SIZE) * (this.n - 1)));
+    const x0 = Math.floor(u);
+    const z0 = Math.floor(v);
+    const x1 = Math.min(this.n - 1, x0 + 1);
+    const z1 = Math.min(this.n - 1, z0 + 1);
+    const tx = u - x0;
+    const tz = v - z0;
+    const top = this.get(x0, z0) + (this.get(x1, z0) - this.get(x0, z0)) * tx;
+    const bottom = this.get(x0, z1) + (this.get(x1, z1) - this.get(x0, z1)) * tx;
+    return top + (bottom - top) * tz;
+  }
 }
